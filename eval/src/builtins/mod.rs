@@ -5,14 +5,21 @@
 
 use bstr::{ByteSlice, ByteVec};
 use builtin_macros::builtins;
-use genawaiter::rc::Gen;
+use futures::{
+    executor::{self, LocalPool},
+    task::LocalSpawnExt,
+};
+use genawaiter::{rc::{Co, Gen}, GeneratorState};
 use regex::Regex;
 use std::cmp::{self, Ordering};
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::{mpsc::channel, Arc, Mutex, RwLock};
+use std::time::Duration;
 
 use crate::arithmetic_op;
+use crate::generators::{VMRequest, VMResponse};
 use crate::value::PointerEquality;
 use crate::vm::generators::{self, GenCo};
 use crate::warnings::WarningKind;
@@ -84,6 +91,7 @@ mod pure_builtins {
     use std::ffi::OsString;
 
     use bstr::{BString, ByteSlice, B};
+    use futures::task::LocalSpawn;
     use itertools::Itertools;
     use os_str_bytes::OsStringBytes;
     use rustc_hash::FxHashSet;
@@ -949,6 +957,7 @@ mod pure_builtins {
 
     #[builtin("lessThan")]
     async fn builtin_less_than(co: GenCo, x: Value, y: Value) -> Result<Value, ErrorKind> {
+        println!("calling lessThan");
         let span = generators::request_span(&co).await;
         match x.nix_cmp_ordering(y, co, span).await? {
             Err(cek) => Ok(Value::from(cek)),
@@ -1291,53 +1300,68 @@ mod pure_builtins {
         Ok(Value::List(NixList::from(ret)))
     }
 
+
     #[builtin("sort")]
     async fn builtin_sort(co: GenCo, comparator: Value, list: Value) -> Result<Value, ErrorKind> {
-        let list = list.to_list()?;
-        let mut len = list.len();
-        let mut data = list.into_inner();
+        let mut list = list.to_list()?.into_inner();
 
-        // Asynchronous sorting algorithm in which the comparator can make use of
-        // VM requests (required as `builtins.sort` uses comparators written in
-        // Nix).
-        //
-        // This is a simple, optimised bubble sort implementation. The choice of
-        // algorithm is constrained by the comparator in Nix not being able to
-        // yield equality, and us being unable to use the standard library
-        // implementation of sorting (which is a lot longer, but a lot more
-        // efficient) here.
-        // TODO(amjoseph): Investigate potential impl in Nix code, or Tvix bytecode.
-        loop {
-            let mut new_len = 0;
-            for i in 1..len {
-                if try_value!(
-                    generators::request_force(
-                        &co,
-                        generators::request_call_with(
-                            &co,
-                            comparator.clone(),
-                            [data[i].clone(), data[i - 1].clone()],
-                        )
-                        .await,
-                    )
-                    .await
-                )
-                .as_bool()
-                .context("evaluating comparator in `builtins.sort`")?
-                {
-                    data.swap(i, i - 1);
-                    new_len = i;
+        let safe_co = std::sync::RwLock::new(co);
+        let safe_co = safe_co.read().unwrap();
+
+        let request_call_with = |a, b| {
+            generators::request_call_with(
+                &safe_co,
+                "lessThan".into(),
+                [Value::Integer(a), Value::Integer(b)],
+            )
+        };
+
+        let request_force = |value: Value| {
+            generators::request_force(
+                &safe_co,
+                value,
+            )
+        };
+
+        list.sort_by(|a, b| {
+            let a = a.clone().as_int().unwrap();
+            let b = b.clone().as_int().unwrap();
+
+            futures::executor::block_on(async move {
+                // Well, no, this is not what we want:
+                if true {
+                    if a < b {
+                        Ordering::Less
+                    } else {
+                        Ordering::Greater
+                    }
                 }
-            }
+                else if true {
+                    // No new runtime (hangs):
+                    if request_force(request_call_with(a, b).await).await.as_bool().unwrap() {
+                        Ordering::Less
+                    } else {
+                        Ordering::Greater
+                    }
+                }
+                else if true {
+                    // New runtime (hangs):
+                    let runtime = tokio::runtime::Runtime::new().unwrap();
+                    runtime
+                        .block_on(async move {
+                            if request_force(request_call_with(a, b).await).await.as_bool().unwrap() {
+                                Ordering::Less
+                            } else {
+                                Ordering::Greater
+                            }
+                        })
+                } else {
+                    Ordering::Less
+                }
+            })
+        });
 
-            if new_len == 0 {
-                break;
-            }
-
-            len = new_len;
-        }
-
-        Ok(Value::List(data.into()))
+        Ok(Value::List(list.into()))
     }
 
     #[builtin("splitVersion")]

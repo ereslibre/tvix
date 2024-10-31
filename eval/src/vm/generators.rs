@@ -36,6 +36,7 @@ pub(crate) enum GeneratorState {
 /// and enter some other frame to process the request.
 ///
 /// Responses are returned to generators via the [`GeneratorResponse`] type.
+#[derive(Debug)]
 pub enum VMRequest {
     /// Request that the VM forces this value. This message is first sent to the
     /// VM with the unforced value, then returned to the generator with the
@@ -56,7 +57,7 @@ pub enum VMRequest {
     CapturedWithValue(usize),
 
     /// Request that the two values be compared for Nix equality. The result is
-    /// returned in the `ForceValue` message.
+    /// rturned in the `ForceValue` message.
     NixEquality(Box<(Value, Value)>, PointerEquality),
 
     /// Push the given value to the VM's stack. This is used to prepare the
@@ -539,13 +540,20 @@ pub type GenCo = Co<VMRequest, VMResponse>;
 
 /// Request that the VM place the given value on its stack.
 pub async fn request_stack_push(co: &GenCo, val: Value) {
+    println!("request_stack_push");
     match co.yield_(VMRequest::StackPush(val)).await {
-        VMResponse::Empty => {}
-        msg => panic!(
-            "Tvix bug: VM responded with incorrect generator message: {}",
-            msg
-        ),
+        VMResponse::Empty => {
+            println!("VMResponse::Empty");
+        }
+        msg => {
+            println!("VMResponse msg: {msg}");
+            panic!(
+                "Tvix bug: VM responded with incorrect generator message: {}",
+                msg
+            );
+        }
     }
+    println!("request_stack_push; b");
 }
 
 /// Request that the VM pop a value from the stack and return it to the
@@ -610,11 +618,15 @@ where
     I: IntoIterator<Item = Value>,
     I::IntoIter: DoubleEndedIterator,
 {
+    println!("request_call_with");
+
     let mut num_args = 0_usize;
     for arg in args.into_iter().rev() {
         num_args += 1;
         request_stack_push(co, arg).await;
     }
+
+    println!("request_call_with 2");
 
     debug_assert!(num_args > 0, "call_with called with an empty list of args");
 

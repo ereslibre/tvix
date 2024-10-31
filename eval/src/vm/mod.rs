@@ -390,6 +390,8 @@ where
 
             match frame {
                 Frame::CallFrame { call_frame, span } => {
+                    println!("to the next frame (call frame)");
+
                     self.observer
                         .observe_enter_call_frame(0, &call_frame.lambda, frame_id);
 
@@ -411,6 +413,8 @@ where
                     state,
                     generator,
                 } => {
+                    println!("to the next frame (generator frame name: {name})");
+
                     self.observer
                         .observe_enter_generator(frame_id, name, &self.stack);
 

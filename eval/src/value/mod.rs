@@ -58,7 +58,6 @@ pub enum Value {
 
     #[serde(skip)]
     Builtin(Builtin),
-
     // Internal values that, while they technically exist at runtime,
     // are never returned to or created directly by users.
     #[serde(skip_deserializing)]
